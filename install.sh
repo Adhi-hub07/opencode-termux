@@ -108,59 +108,64 @@ setup_debian() {
 setup_opencode() {
   info "[5/7] Checking opencode in Debian..."
 
-  # Check if already installed
+  # ── Check binary directly ──
   for path in /usr/local/bin/opencode /usr/bin/opencode; do
     if proot-distro login debian --shared-tmp -- test -x "$path" 2>/dev/null; then
       OPENCODE_BIN="$path"
-      OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
+      OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
       pass "opencode already installed: ${OC_VER:-$OPENCODE_BIN}"
       return 0
     fi
   done
 
-  # Try 'which'
+  # ── Check via 'which' ──
   OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
   if [ -n "$OPENCODE_BIN" ]; then
-    pass "opencode found at $OPENCODE_BIN"
+    OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
+    pass "opencode found: ${OC_VER:-$OPENCODE_BIN}"
     return 0
   fi
 
-  info "  Installing opencode-ai via npm (1-2 minutes)..."
+  # ── Check npm global list ──
+  local npm_ok=0
+  proot-distro login debian --shared-tmp -- bash -c 'npm list -g opencode-ai 2>/dev/null | grep -q opencode' 2>/dev/null && npm_ok=1
+  if [ "$npm_ok" -eq 1 ]; then
+    OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
+    if [ -n "$OPENCODE_BIN" ]; then
+      pass "opencode npm package already installed"
+      return 0
+    fi
+  fi
+
+  # ── Install ──
+  info "  Installing opencode-ai via npm..."
   proot-distro login debian -- bash -c "
     export DEBIAN_FRONTEND=noninteractive
-    apt update -qq 2>/dev/null
-    apt install -y -qq curl nodejs npm ripgrep jq 2>/dev/null
-    npm install -g opencode-ai 2>/dev/null
+    NEEDED=
+    for p in curl nodejs npm ripgrep jq; do
+      dpkg -s \$p 2>/dev/null | grep -q 'Status: install ok' || NEEDED=\"\$NEEDED \$p\"
+    done
+    if [ -n \"\$NEEDED\" ]; then
+      apt update -qq 2>/dev/null
+      apt install -y -qq \$NEEDED 2>/dev/null
+    fi
+    echo '  Downloading opencode-ai...'
+    npm install -g opencode-ai 2>&1 | tail -3
   "
 
-  # Find binary
+  # ── Find binary after install ──
   for path in /usr/local/bin/opencode /usr/bin/opencode; do
-    if proot-distro login debian --shared-tmp -- test -x "$path" 2>/dev/null; then
-      OPENCODE_BIN="$path"
-      break
-    fi
+    proot-distro login debian --shared-tmp -- test -x "$path" 2>/dev/null && { OPENCODE_BIN="$path"; break; }
   done
-
-  if [ -z "$OPENCODE_BIN" ]; then
-    OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
-  fi
-
-  if [ -z "$OPENCODE_BIN" ]; then
-    warn "npm install failed, retrying without quiet..."
-    proot-distro login debian -- bash -c "
-      npm cache clean --force 2>/dev/null
-      npm install -g opencode-ai
-    "
-    OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
-  fi
+  [ -z "$OPENCODE_BIN" ] && OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
 
   if [ -z "$OPENCODE_BIN" ]; then
     fail "opencode installation failed"
-    fail "Manual fix: proot-distro login debian -- npm install -g opencode-ai"
+    fail "Manual: proot-distro login debian -- npm install -g opencode-ai"
     return 1
   fi
 
-  OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
+  OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
   pass "opencode installed: ${OC_VER:-$OPENCODE_BIN}"
 }
 
