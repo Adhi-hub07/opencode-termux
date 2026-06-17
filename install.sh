@@ -1,284 +1,174 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-pass() { echo -e "  ${GREEN}✅${NC} $1"; }
-warn() { echo -e "  ${YELLOW}⚠️${NC} $1"; }
-fail() { echo -e "  ${RED}❌${NC} $1"; }
-info() { echo -e "  ${CYAN}ℹ️${NC} $1"; }
-sep() { echo ""; }
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; N='\033[0m'
+ok()  { echo -e "  ${G}✅${N} $1"; }
+warn() { echo -e "  ${Y}⚠️${N} $1"; }
+fail() { echo -e "  ${R}❌${N} $1"; }
+info() { echo -e "  ${C}ℹ️${N} $1"; }
 
-export OPENCODE_BIN=""
+OC_BIN=""
 
-# ──────────────────────────────────────────────
-# CHECK functions — only check, no install
-# ──────────────────────────────────────────────
+termux_env()  { [ -d /data/data/com.termux ] && [ -n "$PREFIX" ]; }
+pkg_has()     { dpkg -s "$1" 2>/dev/null | grep -q "Status: install ok"; }
+debian_ok()   { [ -d "$PREFIX/var/lib/proot-distro/containers/debian" ] || proot-distro login debian -- true 2>/dev/null; }
+pdexec()      { proot-distro login debian --shared-tmp -- "$@"; }
 
-check_termux() {
-  [ -d /data/data/com.termux ] && [ -n "$PREFIX" ]
-}
-
-check_storage() {
-  local avail=$(df /data/data/com.termux 2>/dev/null | awk 'NR==2{print $4}')
-  [ -n "$avail" ] && [ "$avail" -gt 500000 ]
-}
-
-check_ram() {
-  local total=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
-  [ "$total" -gt 3000000 ]
-}
-
-check_pkg_installed() {
-  dpkg -s "$1" 2>/dev/null | grep -q "Status: install ok"
-}
-
-check_debian_exists() {
-  [ -d "$PREFIX/var/lib/proot-distro/containers/debian" ] || proot-distro login debian -- true 2>/dev/null
-}
-
-check_opencode_binary() {
-  local paths="/usr/local/bin/opencode /usr/bin/opencode /usr/lib/node_modules/.bin/opencode"
-  for p in $paths; do
-    if proot-distro login debian --shared-tmp -- test -x "$p" 2>/dev/null; then
-      OPENCODE_BIN="$p"; return 0
-    fi
+find_oc_bin() {
+  for p in /usr/local/bin/opencode /usr/bin/opencode /usr/lib/node_modules/.bin/opencode; do
+    pdexec test -x "$p" 2>/dev/null && { OC_BIN="$p"; return 0; }
   done
-  local w=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
-  if [ -n "$w" ]; then
-    OPENCODE_BIN="$w"; return 0
-  fi
+  local w=$(pdexec bash -c 'which opencode 2>/dev/null' 2>/dev/null)
+  [ -n "$w" ] && { OC_BIN="$w"; return 0; }
   return 1
 }
 
-check_opencode_npm() {
-  proot-distro login debian --shared-tmp -- bash -c 'npm list -g opencode-ai 2>/dev/null' 2>/dev/null | grep -q "opencode-ai"
+oc_ver() {
+  pdexec bash -c '"$1" --version 2>/dev/null | head -1' _ "$OC_BIN" 2>/dev/null || echo ""
 }
 
-check_alias_correct() {
-  local want="alias opencode='proot-distro login debian --shared-tmp -- ${OPENCODE_BIN}'"
-  local have=$(grep '^alias opencode=' ~/.bashrc 2>/dev/null || echo "")
-  [ "$have" = "$want" ]
-}
+echo ""
+echo -e "${C}╔════════════════════════════════════════╗${N}"
+echo -e "${C}║    opencode-termux — Perfect Setup     ║${N}"
+echo -e "${C}╚════════════════════════════════════════╝${N}"
 
-# ──────────────────────────────────────────────
-# STATUS REPORT — check everything, show table
-# ──────────────────────────────────────────────
+# ═══════════════════════ PHASE 1: SCAN ═══════════════════════
+echo ""
+echo -e "  ${Y}◆ Phase 1: Scanning your device...${N}"
+echo ""
 
-show_status() {
-  sep
-  echo -e "${CYAN}  ┌────────────────────────────────────┐${NC}"
-  echo -e "${CYAN}  │       SYSTEM STATUS REPORT         │${NC}"
-  echo -e "${CYAN}  └────────────────────────────────────┘${NC}"
-  sep
+termux_env || { fail "Not in Termux (install from F-Droid)"; exit 1; }
+ok "Termux environment"
 
-  local items=""
-  local n=0; local total=7
+avail=$(df /data/data/com.termux 2>/dev/null | awk 'NR==2{print $4}')
+[ -n "$avail" ] && [ "$avail" -gt 500000 ] && ok "Storage: $((avail/1000))MB free" || warn "Storage low"
 
-  # 1: Environment
-  if check_termux; then items="${items}  ${GREEN}✅${NC} Termux environment\n"; n=$((n+1)); else items="${items}  ${RED}❌${NC} Termux environment\n"; fi
+ram=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
+[ "$ram" -gt 3000000 ] && ok "RAM: $((ram/1024/1024))GB" || warn "RAM <3GB"
 
-  # 2: Storage
-  local avail=$(df /data/data/com.termux 2>/dev/null | awk 'NR==2{print $4}')
-  if check_storage; then items="${items}  ${GREEN}✅${NC} Storage: $((avail/1000))MB free\n"; n=$((n+1)); else items="${items}  ${RED}❌${NC} Storage: ${avail:-?}KB free (need >500MB)\n"; fi
+mpkgs="proot-distro nodejs ripgrep jq"; MISSING=""
+for p in $mpkgs; do pkg_has "$p" || MISSING="$MISSING $p"; done
+[ -z "$MISSING" ] && ok "Termux packages: all present" || warn "Missing:${MISSING}"
 
-  # 3: RAM
-  local ram=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
-  if check_ram; then items="${items}  ${GREEN}✅${NC} RAM: $((ram/1024/1024))GB\n"; n=$((n+1)); else items="${items}  ${RED}❌${NC} RAM: $((ram/1024/1024))GB (need >3GB)\n"; fi
+if debian_ok; then ok "Debian proot: installed"
+else warn "Debian proot: missing"
+fi
 
-  # 4: Termux packages
-  local mpkgs="proot-distro nodejs ripgrep jq"; local missing_pkgs=""
-  for p in $mpkgs; do check_pkg_installed "$p" || missing_pkgs="$missing_pkgs $p"; done
-  if [ -z "$missing_pkgs" ]; then
-    items="${items}  ${GREEN}✅${NC} Termux packages: all installed\n"; n=$((n+1))
-  else
-    items="${items}  ${RED}❌${NC} Missing packages:${missing_pkgs}\n"
-  fi
+if find_oc_bin; then
+  v=$(oc_ver); ok "opencode: ${v:-$OC_BIN}"
+elif pdexec bash -c 'npm list -g opencode-ai 2>/dev/null' 2>/dev/null | grep -q "opencode-ai"; then
+  warn "opencode npm pkg exists, binary missing"
+else
+  warn "opencode: not installed"
+fi
 
-  # 5: Debian proot
-  if check_debian_exists; then
-    items="${items}  ${GREEN}✅${NC} Debian proot: installed\n"; n=$((n+1))
-  else
-    items="${items}  ${RED}❌${NC} Debian proot: not installed\n"
-  fi
+WANT="alias opencode='proot-distro login debian --shared-tmp -- ${OC_BIN}'"
+HAVE=""
+[ -f ~/.bashrc ] && HAVE=$(grep '^alias opencode=' ~/.bashrc 2>/dev/null || echo "")
+[ -n "$OC_BIN" ] && [ "$HAVE" = "$WANT" ] && ok "Alias: correct" || warn "Alias: needs update"
 
-  # 6: opencode binary
-  if check_opencode_binary; then
-    local ver=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
-    items="${items}  ${GREEN}✅${NC} opencode: ${ver:-$OPENCODE_BIN}\n"; n=$((n+1))
-  else
-    check_opencode_npm && items="${items}  ${YELLOW}⚠️${NC} opencode npm package exists but binary not found\n" \
-                     || items="${items}  ${RED}❌${NC} opencode: not installed\n"
-  fi
+[ -d ~/.config/opencode ] 2>/dev/null && ok "Config dir: exists" || warn "Config dir: missing"
 
-  # 7: Alias
-  if [ -n "$OPENCODE_BIN" ] && check_alias_correct; then
-    items="${items}  ${GREEN}✅${NC} Alias: configured\n"; n=$((n+1))
-  elif [ -n "$OPENCODE_BIN" ]; then
-    items="${items}  ${YELLOW}⚠️${NC} Alias: wrong or missing\n"
-  else
-    items="${items}  ${YELLOW}⚠️${NC} Alias: pending (opencode not installed)\n"
-  fi
+# ═══════════════════════ PHASE 2: INSTALL ═══════════════════════
+echo ""
+echo -e "  ${Y}◆ Phase 2: Installing what's needed...${N}"
+echo ""
 
-  echo -e "$items"
-  echo -e "  ${CYAN}${n}/${total} checks passed${NC}"
-  sep
-}
+NEED_DEBIAN=0; NEED_OC=0; NEED_ALIAS=0; NEED_CONF=0; NEED_PKGS=0
 
-# ──────────────────────────────────────────────
-# FIX functions — idempotent, only if needed
-# ──────────────────────────────────────────────
+for p in $mpkgs; do pkg_has "$p" || NEED_PKGS=1; done
+debian_ok    || NEED_DEBIAN=1
+find_oc_bin  || NEED_OC=1
+WANT="alias opencode='proot-distro login debian --shared-tmp -- ${OC_BIN}'"
+HAVE=""; [ -f ~/.bashrc ] && HAVE=$(grep '^alias opencode=' ~/.bashrc 2>/dev/null || echo "")
+[ -n "$OC_BIN" ] && [ "$HAVE" = "$WANT" ] || NEED_ALIAS=1
+pdexec test -d ~/.config/opencode 2>/dev/null || NEED_CONF=1
 
-fix_termux_pkgs() {
-  local missing_pkgs=""
-  for p in proot-distro nodejs ripgrep jq; do
-    check_pkg_installed "$p" || missing_pkgs="$missing_pkgs $p"
-  done
-  if [ -z "$missing_pkgs" ]; then
-    pass "All Termux packages already installed"
-  else
-    info "Installing:${missing_pkgs}"
-    pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null || pkg update -y
-    pkg install -y $missing_pkgs 2>/dev/null
-    pass "Termux packages installed"
-  fi
-}
+# ── Packages ──
+if [ "$NEED_PKGS" -eq 1 ]; then
+  echo -e "  ${C}[1/4] Termux packages...${N}"
+  pkg update -y 2>/dev/null || pkg update -y
+  for p in $mpkgs; do pkg_has "$p" || pkg install -y "$p" 2>/dev/null; done
+  for p in $mpkgs; do pkg_has "$p" || { fail "Failed to install $p"; exit 1; }; done
+  ok "Packages installed"
+else
+  ok "[1/4] Termux packages: skipped (already done)"
+fi
 
-fix_debian() {
-  if check_debian_exists; then
-    pass "Debian proot already installed"
-  else
-    info "Installing Debian proot (2-5 min)..."
-    proot-distro install debian 2>&1
-    pass "Debian proot installed"
-  fi
-}
+# ── Debian ──
+if [ "$NEED_DEBIAN" -eq 1 ]; then
+  echo -e "  ${C}[2/4] Debian proot...${N}"
+  proot-distro install debian 2>&1 || { fail "Debian install failed"; exit 1; }
+  ok "Debian installed"
+else
+  ok "[2/4] Debian proot: skipped (already done)"
+fi
 
-fix_opencode() {
-  # Shortcut: binary already exists
-  if check_opencode_binary; then
-    local ver=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
-    pass "opencode already installed: ${ver:-$OPENCODE_BIN}"
-    return 0
-  fi
-
-  # Shortcut: npm package exists but binary not in PATH
-  if check_opencode_npm; then
-    OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null || find /usr -name opencode -type f 2>/dev/null | head -1' 2>/dev/null || echo "")
-    if [ -n "$OPENCODE_BIN" ]; then
-      pass "opencode npm package already installed (binary at $OPENCODE_BIN)"
-      return 0
-    fi
-  fi
-
-  info "Installing opencode-ai via npm..."
-
+# ── opencode ──
+if [ "$NEED_OC" -eq 1 ]; then
+  echo -e "  ${C}[3/4] opencode...${N}"
   proot-distro login debian -- bash -c "
     export DEBIAN_FRONTEND=noninteractive
-    NEEDED=
     for p in curl nodejs npm ripgrep jq; do
-      dpkg -s \$p 2>/dev/null | grep -q 'Status: install ok' || NEEDED=\"\$NEEDED \$p\"
+      dpkg -s \$p 2>/dev/null | grep -q 'Status: install ok' || NEED=\"\$NEED \$p\"
     done
-    if [ -n \"\$NEEDED\" ]; then
-      apt update -qq 2>/dev/null
-      apt install -y -qq \$NEEDED 2>/dev/null
-    fi
-    echo '  Downloading opencode-ai...'
-    npm install -g opencode-ai 2>&1 | tail -5
-  "
+    [ -n \"\$NEED\" ] && { apt update -qq 2>/dev/null; apt install -y -qq \$NEED 2>/dev/null; }
+    npm install -g opencode-ai 2>&1
+  " || { fail "npm install failed"; exit 1; }
+  find_oc_bin || { fail "opencode binary not found after install"; exit 1; }
+  ok "opencode installed ($(oc_ver))"
+else
+  ok "[3/4] opencode: skipped (already done)"
+fi
 
-  # Locate binary
-  check_opencode_binary || {
-    OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'find /usr -name opencode -type f 2>/dev/null | head -1' 2>/dev/null || echo "")
-  }
-
-  if [ -z "$OPENCODE_BIN" ]; then
-    fail "opencode install failed"
-    fail "Try: proot-distro login debian -- npm install -g opencode-ai"
-    return 1
-  fi
-
-  local ver=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null | head -1' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
-  pass "opencode installed: ${ver:-$OPENCODE_BIN}"
-}
-
-fix_alias() {
-  if [ -z "$OPENCODE_BIN" ]; then
-    warn "No opencode binary found, skipping alias"
-    return 1
-  fi
-
-  if check_alias_correct; then
-    pass "Alias already correct"
-    return 0
-  fi
-
-  local alias_cmd="alias opencode='proot-distro login debian --shared-tmp -- ${OPENCODE_BIN}'"
+# ── Alias + config ──
+if [ "$NEED_ALIAS" -eq 1 ]; then
+  echo -e "  ${C}[4/4] Alias + config...${N}"
+  WANT="alias opencode='proot-distro login debian --shared-tmp -- ${OC_BIN}'"
   sed -i '/^alias opencode=/d' ~/.bashrc 2>/dev/null
-  echo "$alias_cmd" >> ~/.bashrc
-  eval "$alias_cmd" 2>/dev/null || true
-  pass "Alias added to ~/.bashrc"
-}
+  echo "$WANT" >> ~/.bashrc
+  eval "$WANT" 2>/dev/null || true
+  ok "Alias configured"
+else
+  ok "[4/4] Alias: skipped (already correct)"
+fi
 
-fix_config() {
-  if proot-distro login debian --shared-tmp -- test -d ~/.config/opencode 2>/dev/null; then
-    pass "Config directory exists"
-  else
-    proot-distro login debian --shared-tmp -- mkdir -p ~/.config/opencode 2>/dev/null
-    pass "Config directory created"
-  fi
-}
+if [ "$NEED_CONF" -eq 1 ]; then
+  pdexec mkdir -p ~/.config/opencode 2>/dev/null
+  ok "Config dir created"
+fi
 
-# ──────────────────────────────────────────────
-# MAIN
-# ──────────────────────────────────────────────
-
-echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║       opencode-termux — One-Click Setup  ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
-
-# ── Phase 1: Status ──
-sep
-echo -e "  ${YELLOW}◆ PHASE 1: Checking your device...${NC}"
-show_status
-
-# ── Phase 2: Fix ──
-sep
-echo -e "  ${YELLOW}◆ PHASE 2: Applying fixes...${NC}"
-sep
-
-check_termux || { fail "Not in Termux"; exit 1; }
-
-echo -e "  ${CYAN}[1] Termux packages${NC}"
-fix_termux_pkgs
-sep
-
-echo -e "  ${CYAN}[2] Debian proot${NC}"
-fix_debian || exit 1
-sep
-
-echo -e "  ${CYAN}[3] opencode${NC}"
-fix_opencode || exit 1
-sep
-
-echo -e "  ${CYAN}[4] Alias + config${NC}"
-fix_alias; fix_config
-sep
-
-# ── Phase 3: Verify ──
-echo -e "  ${YELLOW}◆ PHASE 3: Verifying...${NC}"
-sep
-show_status
-
-sep
-echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║         INSTALLATION COMPLETE!          ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+# ═══════════════════════ PHASE 3: CONFIRM ═══════════════════════
 echo ""
-echo -e "  ${CYAN}opencode${NC}          Start coding"
-echo -e "  ${CYAN}opencode web${NC}      Web UI at localhost:4096"
+echo -e "  ${Y}◆ Phase 3: Final check...${N}"
 echo ""
 
-# ── Auto-launch ──
-echo -e "  ${CYAN}Launching opencode now...${NC}"
+ALL_GOOD=0
+for p in $mpkgs; do pkg_has "$p" || { fail "Package $p missing"; ALL_GOOD=1; }; done
+debian_ok    || { fail "Debian proot not found"; ALL_GOOD=1; }
+find_oc_bin  || { fail "opencode not found"; ALL_GOOD=1; }
+[ -n "$(oc_ver)" ] || warn "opencode version check failed"
+WANT="alias opencode='proot-distro login debian --shared-tmp -- ${OC_BIN}'"
+HAVE=$( [ -f ~/.bashrc ] && grep '^alias opencode=' ~/.bashrc 2>/dev/null || echo "" )
+[ "$HAVE" = "$WANT" ] || { warn "Alias check failed"; ALL_GOOD=1; }
+
+if [ "$ALL_GOOD" -eq 0 ]; then
+  ok "Everything looks good!"
+else
+  warn "Some checks failed, but installation completed"
+fi
+
 echo ""
-proot-distro login debian --shared-tmp -- "$OPENCODE_BIN"
+echo -e "${G}╔════════════════════════════════════════╗${N}"
+echo -e "${G}║           SETUP COMPLETE!              ║${N}"
+echo -e "${G}╚════════════════════════════════════════╝${N}"
+echo ""
+echo -e "  ${C}opencode${N}          Start terminal"
+echo -e "  ${C}opencode web${N}      Web UI at localhost:4096"
+echo ""
+
+if [ -n "$OC_BIN" ]; then
+  echo -e "  ${C}Launching opencode...${N}"
+  echo ""
+  proot-distro login debian --shared-tmp -- "$OC_BIN"
+fi
