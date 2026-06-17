@@ -1,6 +1,6 @@
 # 🚀 opencode-termux
 
-**Run OpenCode AI coding agent on your Android phone via Termux — one command install.**
+**OpenCode AI coding agent on your Android phone — one command install.**
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Adhi-hub07/opencode-termux/main/install.sh | bash
@@ -10,16 +10,18 @@ After install → close & reopen Termux → type **`opencode`**
 
 ---
 
-## ✨ Features
+## 💾 Storage Breakdown
 
-| Feature | How |
+| Component | Size |
 |---|---|
-| 🔥 **One-line install** | `curl ... \| bash` — auto-everything |
-| 📦 **Full proot Debian setup** | Isolated Linux environment inside Android |
-| ⚡ **Auto alias** | Just type `opencode` in Termux |
-| 🌐 **Web UI mode** | `opencode web` → browser at localhost:4096 |
-| 🔧 **Auto-updates via npm** | Latest opencode always |
-| 🧹 **No root required** | Works in standard Termux |
+| proot-distro + Debian base | ~500 MB |
+| Node.js + npm | ~150 MB |
+| opencode-ai (npm) | ~250 MB |
+| ripgrep + jq + deps | ~50 MB |
+| **Total** | **~950 MB** |
+| **Space needed during install** | **~1.5 GB** (includes temp files) |
+
+Make sure you have **at least 2 GB free** before installing.
 
 ---
 
@@ -27,92 +29,101 @@ After install → close & reopen Termux → type **`opencode`**
 
 | Requirement | Minimum | Recommended |
 |---|---|---|
-| **Phone** | Any Android | 6GB+ RAM |
-| **Storage** | 2GB free | 5GB+ free |
-| **Termux** | From F-Droid | Latest version |
-| **Internet** | Required for install | Broadband/WiFi |
+| **RAM** | 4 GB | **6 GB+** |
+| **Free Storage** | **2 GB** | **5 GB+** |
+| **Android** | 11+ | 12+ |
+| **Termux** | From **[F-Droid](https://f-droid.org/packages/com.termux/)** | Latest version |
+| **Internet** | Yes (downloads ~1 GB) | WiFi |
 
-Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) (NOT Play Store — it's outdated).
+⚠️ **Use F-Droid version** — Play Store Termux is outdated and broken.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 One-Click Install
 
 ```bash
-# 1. Install (5-10 minutes)
 curl -sL https://raw.githubusercontent.com/Adhi-hub07/opencode-termux/main/install.sh | bash
-
-# 2. Close & reopen Termux, then:
-opencode
 ```
 
-**First run**: opencode will ask for an AI provider API key.
+### What happens step-by-step
+
+| # | Step | Time |
+|---|---|---|
+| 1 | Checks Termux environment | 1s |
+| 2 | Updates Termux packages | 30s |
+| 3 | Installs proot-distro, nodejs, ripgrep | 1-2 min |
+| 4 | Downloads & installs Debian proot | 2-5 min |
+| 5 | Installs opencode inside Debian | 2-3 min |
+| 6 | Creates `opencode` alias in .bashrc | 1s |
+| 7 | **Auto-launches opencode** | — |
+
+**Total: ~5-10 minutes** (depends on internet speed)
 
 ---
 
-## 🔧 Usage
+## 📱 Usage
 
 ```bash
-# Start opencode (terminal chat)
+# Start coding
 opencode
 
-# Start with a project directory
+# Start in a project folder
 cd my-project
 opencode
 
-# Web UI mode
+# Web UI (open in Chrome browser)
 opencode web
-# Then open Chrome → http://localhost:4096
+# → http://localhost:4096
 
-# Set API key (optional — opencode will prompt otherwise)
+# Set API key (or opencode will prompt you)
 export ANTHROPIC_API_KEY="sk-ant-..."
 opencode
 ```
+
+**Supported AI providers**: Claude (Anthropic), OpenAI, Gemini (Google), Grok (xAI), and more.
 
 ---
 
 ## 📦 What Gets Installed
 
 ```
-Termux
-├── proot-distro
-│   └── Debian Linux
-│       ├── nodejs + npm
-│       ├── opencode-ai (npm global)
-│       ├── ripgrep + jq
-│       └── ~/.config/opencode/opencode.json
-└── ~/.bashrc
-    └── alias opencode="proot-distro login debian --shared-tmp -- opencode"
+/data/data/com.termux/files/home/
+├── .bashrc
+│   └── alias opencode = "proot-distro login debian --shared-tmp -- opencode"
+│
+/data/data/com.termux/files/usr/var/lib/proot-distro/containers/
+└── debian/  (~500 MB)
+    └── rootfs/
+        ├── usr/local/bin/opencode  (opencode binary)
+        ├── usr/lib/node_modules/opencode-ai/  (~250 MB)
+        ├── usr/bin/node  (Node.js)
+        ├── usr/bin/rg  (ripgrep)
+        └── root/.config/opencode/
+            └── opencode.json
 ```
 
 ---
 
 ## ⚙️ How It Works
 
-OpenCode doesn't run natively on Android/Termux (the binary is built for glibc Linux, not Bionic libc). This script:
+OpenCode is built for **glibc Linux** — Android uses **Bionic libc** instead, so it can't run natively in Termux.
 
-1. Installs **proot-distro** — a chroot-like tool for Termux
-2. Sets up **Debian Linux** inside it
-3. Installs **Node.js** + **opencode** inside Debian
-4. Creates an **alias** so typing `opencode` automatically enters proot + runs the command
+This script uses **proot-distro** (a chroot-like tool) to run a full Debian Linux inside Termux. The `opencode` alias automatically enters Debian and runs opencode — so it feels like a single command.
 
-No root needed, no bootloop risk, fully reversible.
+No root required. No bootloader unlock. No risk of bricking.
 
 ---
 
 ## 🗑️ Uninstall
 
 ```bash
-# Remove the alias
+# Step 1: Remove the alias
 sed -i '/alias opencode=/d' ~/.bashrc
 
-# Remove opencode from Debian
-proot-distro login debian -- npm uninstall -g opencode-ai
-
-# Remove Debian entirely (if you want)
+# Step 2: Remove Debian proot (frees ~500 MB)
 proot-distro remove debian
 
-# Remove dependencies
+# Step 3: Remove packages (frees ~200 MB)
 pkg uninstall proot-distro ripgrep jq
 ```
 
@@ -122,19 +133,21 @@ pkg uninstall proot-distro ripgrep jq
 
 | Problem | Fix |
 |---|---|
-| `command not found: opencode` | Run `source ~/.bashrc` or reopen Termux |
-| Install hangs | Poor internet — try again on WiFi |
+| `command not found: opencode` | Run `source ~/.bashrc` or close & reopen Termux |
+| Install hangs / times out | Poor internet — retry on WiFi with `curl ... \| bash` again (it resumes) |
+| `Permission denied` | You're in `/sdcard` — run `cd ~` first (internal storage) |
 | `proot-distro: command not found` | Run `pkg install proot-distro` manually |
-| `Permission denied` | You're in /sdcard — run `cd ~` first |
-| opencode crashes | Close Termux, reopen, try `opencode` again |
+| opencode shows `e_type: 2` error | Your CPU is not ARM64 — this script only supports aarch64 |
+| opencode crashes | Close Termux completely, reopen, try again |
+| "Can't find API key" | Run `export ANTHROPIC_API_KEY="sk-..."` before `opencode` |
 
 ---
 
-## 📂 Related Projects
+## 📂 Related
 
-- [Adhi-hub07/andro-diag](https://github.com/Adhi-hub07/andro-diag) — Android device diagnostics CLI
-- [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) — Native opencode binary for Termux (alternative)
-- [rajbreno/PocketCode](https://github.com/rajbreno/PocketCode) — PocketCode: AI coding on Android
+- [Adhi-hub07/andro-diag](https://github.com/Adhi-hub07/andro-diag) — Android device health diagnostics CLI
+- [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) — Native binary (no proot needed, experimental)
+- [rajbreno/PocketCode](https://github.com/rajbreno/PocketCode) — AI coding on Android guide
 
 ---
 
