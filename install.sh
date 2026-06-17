@@ -82,16 +82,24 @@ setup_termux_pkgs() {
 # ──────────────────────────────────────────────
 setup_debian() {
   info "[4/7] Checking Debian proot..."
-  if proot-distro list 2>/dev/null | grep -q "debian"; then
+
+  # Check if Debian container already exists (by directory or login test)
+  local exists=0
+  [ -d "$PREFIX/var/lib/proot-distro/containers/debian" ] && exists=1
+  proot-distro login debian -- true 2>/dev/null && exists=1
+
+  if [ "$exists" -eq 1 ]; then
     pass "Debian proot already installed"
-  else
-    info "  Installing Debian (2-5 minutes)..."
-    proot-distro install debian || {
-      fail "Debian install failed"
-      return 1
-    }
-    pass "Debian proot installed"
+    return 0
   fi
+
+  info "  Installing Debian (2-5 minutes)..."
+  proot-distro install debian 2>&1 || {
+    fail "Debian install failed"
+    info "  Try: proot-distro reset debian"
+    return 1
+  }
+  pass "Debian proot installed"
 }
 
 # ──────────────────────────────────────────────
