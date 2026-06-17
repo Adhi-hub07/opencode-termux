@@ -64,37 +64,70 @@ proot-distro login debian -- bash -c "
   export DEBIAN_FRONTEND=noninteractive
   apt update -qq 2>/dev/null && apt install -y -qq curl nodejs npm ripgrep jq 2>/dev/null
   npm install -g opencode-ai 2>/dev/null
-" 2>&1
+"
 
-# Verify
-proot-distro login debian -- bash -c "which opencode 2>/dev/null && opencode --version 2>/dev/null" > /tmp/oc_ver 2>&1 || true
-oc_ver=$(cat /tmp/oc_ver 2>/dev/null || echo "")
-[ -n "$oc_ver" ] && pass "opencode installed: ${oc_ver}" || warn "opencode version check failed"
+# ─── Find the opencode binary path ───
+echo ""
+info "Locating opencode binary..."
+OPENCODE_BIN=""
+for path in /usr/local/bin/opencode /usr/bin/opencode /usr/lib/node_modules/.bin/opencode; do
+  if proot-distro login debian --shared-tmp -- test -x "$path" 2>/dev/null; then
+    OPENCODE_BIN="$path"
+    break
+  fi
+done
+
+if [ -z "$OPENCODE_BIN" ]; then
+  # Try 'which' as fallback
+  OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
+fi
+
+if [ -n "$OPENCODE_BIN" ]; then
+  # Get version
+  OC_VER=$(proot-distro login debian --shared-tmp -- bash -c '"$1" --version 2>/dev/null' _ "$OPENCODE_BIN" 2>/dev/null || echo "")
+  [ -n "$OC_VER" ] && pass "opencode installed: ${OC_VER}" || pass "opencode installed at ${OPENCODE_BIN}"
+else
+  warn "opencode binary not found — trying alternative install method"
+  
+  # Fallback: install via apt or try again
+  proot-distro login debian -- bash -c "
+    export DEBIAN_FRONTEND=noninteractive
+    apt install -y -qq curl nodejs npm 2>/dev/null
+    npm cache clean --force 2>/dev/null
+    npm install -g opencode-ai 2>&1
+  "
+  OPENCODE_BIN=$(proot-distro login debian --shared-tmp -- bash -c 'which opencode 2>/dev/null' 2>/dev/null || echo "")
+  
+  if [ -z "$OPENCODE_BIN" ]; then
+    fail "Failed to install opencode. Run manually: proot-distro login debian -- npm install -g opencode-ai"
+    exit 1
+  fi
+fi
 
 # ─── Setup alias ───
 echo ""
 info "Setting up 'opencode' command..."
-alias_cmd='alias opencode="proot-distro login debian --shared-tmp -- /usr/local/bin/opencode"'
+alias_cmd="alias opencode='proot-distro login debian --shared-tmp -- ${OPENCODE_BIN}'"
 
-# Remove old alias
-sed -i '/alias opencode=/d' ~/.bashrc 2>/dev/null
-
-# Add the alias
+sed -i '/^alias opencode=/d' ~/.bashrc 2>/dev/null
 echo "$alias_cmd" >> ~/.bashrc
-
-# Source it
 eval "$alias_cmd" 2>/dev/null || true
 pass "Alias added to ~/.bashrc"
 
 # ─── Create config dir ───
 info "Setting up opencode config directory..."
-proot-distro login debian --shared-tmp -- bash -c "mkdir -p ~/.config/opencode 2>/dev/null; echo '{\$schema: https://opencode.ai/config.json}' > ~/.config/opencode/opencode.json 2>/dev/null" 2>/dev/null || true
+proot-distro login debian --shared-tmp -- bash -c "mkdir -p ~/.config/opencode 2>/dev/null" 2>/dev/null || true
 pass "Config directory ready"
 
 # ─── Test run ───
 echo ""
 info "Testing opencode..."
-proot-distro login debian --shared-tmp -- timeout 5 /usr/local/bin/opencode --version 2>/dev/null && pass "opencode works!" || warn "Test timed out (expected first time)"
+if proot-distro login debian --shared-tmp -- timeout 5 "$OPENCODE_BIN" --version 2>/dev/null; then
+  OC_VER=$(proot-distro login debian --shared-tmp -- timeout 5 "$OPENCODE_BIN" --version 2>/dev/null)
+  pass "opencode works! ($OC_VER)"
+else
+  warn "Test timed out (expected on first run)"
+fi
 echo ""
 
 # ─── Done ───
@@ -124,4 +157,4 @@ echo ""
 # ─── Auto-launch ───
 echo -e "  ${CYAN}Launching opencode now...${NC}"
 echo ""
-proot-distro login debian --shared-tmp -- /usr/local/bin/opencode
+proot-distro login debian --shared-tmp -- "$OPENCODE_BIN"
